@@ -1,0 +1,6 @@
+links:
+  flipkart_url: https://www.flipkart.com/search?q=
+  product_url: https://www.flipkart.com
+
+secrets:
+  mongodb: mongodb+srv://ineuron:ineuron@cluster0.bisvs.mongodb.net/?retryWrites=true&w=majority

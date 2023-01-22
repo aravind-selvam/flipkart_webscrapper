@@ -1,83 +1,129 @@
-from flask import Flask, render_template, request,jsonify
-from flask_cors import CORS,cross_origin
-import requests
-from bs4 import BeautifulSoup as bs
-from urllib.request import urlopen as uReq
+from scraper.logic.business_logic import Scraper
+from scraper.exception.exception import FlipkartCustomException
+from scraper.data_access.data_access import Database
+from scraper.logging.logging import CustomLogger
+from scraper.utils.utils import plotly_wordcloud
+from fastapi import FastAPI, Form, Request
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from starlette.responses import FileResponse
+import pandas as pd
+import uvicorn
+import sys, os
 
-app = Flask(__name__)
-
-@app.route('/',methods=['GET'])  # route to display the home page
-@cross_origin()
-def homePage():
-    return render_template("index.html")
-
-@app.route('/review',methods=['POST','GET']) # route to show the review comments in a web UI
-@cross_origin()
-def index():
-    if request.method == 'POST':
-        try:
-            searchString = request.form['content'].replace(" ","")
-            flipkart_url = "https://www.flipkart.com/search?q=" + searchString
-            uClient = uReq(flipkart_url)
-            flipkartPage = uClient.read()
-            uClient.close()
-            flipkart_html = bs(flipkartPage, "html.parser")
-            bigboxes = flipkart_html.findAll("div", {"class": "_1AtVbE col-12-12"})
-            del bigboxes[0:3]
-            box = bigboxes[0]
-            productLink = "https://www.flipkart.com" + box.div.div.div.a['href']
-            prodRes = requests.get(productLink)
-            prodRes.encoding='utf-8'
-            prod_html = bs(prodRes.text, "html.parser")
-            print(prod_html)
-            commentboxes = prod_html.find_all('div', {'class': "_16PBlm"})
-
-            filename = searchString + ".csv"
-            fw = open(filename, "w")
-            headers = "Product, Customer Name, Rating, Heading, Comment \n"
-            fw.write(headers)
-            reviews = []
-            for commentbox in commentboxes:
-                try:
-                    #name.encode(encoding='utf-8')
-                    name = commentbox.div.div.find_all('p', {'class': '_2sc7ZR _2V5EHH'})[0].text
-
-                except:
-                    name = 'No Name'
-
-                try:
-                    #rating.encode(encoding='utf-8')
-                    rating = commentbox.div.div.div.div.text
+app = FastAPI()
+app.mount("/static", StaticFiles(directory="static"), name="css")
+templates = Jinja2Templates(directory='templates')
+os.makedirs('logs', exist_ok=True)
+logger = CustomLogger('endpoint_logs')
+database = Database()
 
 
-                except:
-                    rating = 'No Rating'
+@app.get('/')
+def index(request: Request):
+    """
+    API Desc: This api renders main index.html page.
+    :return: Response of the page
+    """
+    logger.info("Index.html page requested")
+    return templates.TemplateResponse(name="index.html", context={"request": request})
 
-                try:
-                    #commentHead.encode(encoding='utf-8')
-                    commentHead = commentbox.div.div.div.p.text
 
-                except:
-                    commentHead = 'No Comment Heading'
-                try:
-                    comtag = commentbox.div.div.find_all('div', {'class': ''})
-                    #custComment.encode(encoding='utf-8')
-                    custComment = comtag[0].div.text
-                except Exception as e:
-                    print("Exception while creating dictionary: ",e)
+@app.post('/results')
+def results(request: Request, content: str = Form(...)):
+    """
+    This api gets search result from index.html and query database if that collection not found,
+    call scraper class to scrape data from flipkart
+    :return: Render results.html
+    """
+    try:
+        search_string = content.replace(" ", "%20")
+        logger.info(f"Searching flipkart for {search_string}")
+        reviews = database.get_collection(search_string)
+        if not reviews.__len__() and search_string != "":
+            scrap = Scraper(search_string)
+            reviews = scrap.get_data()
+            database.create_collection(search_string, reviews)
+        return templates.TemplateResponse(name="results.html",
+                                          context={"request": request,
+                                                   'reviews': reviews[0][list(reviews[0].keys())[1]],
+                                                   'list_of_products': list(reviews[0].keys())[1:],
+                                                   'search_string': search_string})
+    except Exception as e:
+        message = FlipkartCustomException(e, sys)
+        logger.error(message.error_message)
+        return templates.TemplateResponse(name="505.html", context={"request": request})
 
-                mydict = {"Product": searchString, "Name": name, "Rating": rating, "CommentHead": commentHead,
-                          "Comment": custComment}
-                reviews.append(mydict)
-            return render_template('results.html', reviews=reviews[0:(len(reviews)-1)])
-        except Exception as e:
-            print('The Exception message is: ',e)
-            return 'something is wrong'
-    # return render_template('results.html')
+@app.get('/get_wordcloud')
+def get_wordcloud(request: Request, search_string: str):
+    """
+    This api get search query from user to find and load collection from database to generate.
+    :return: renders wordcloud.html
+    """
+    try:
+        reviews = database.get_collection(search_string)
+        return templates.TemplateResponse(name="wordcloud.html",
+                                          context={"request": request,
+                                                   'list_of_products': list(reviews[0].keys())[1:],
+                                                   'search_string': search_string})
+    except Exception as e:
+        message = FlipkartCustomException(e, sys)
+        logger.error(message.error_message)
+        return templates.TemplateResponse(name="505.html", context={"request": request})
 
-    else:
-        return render_template('index.html')
+
+@app.post('/post_wordcloud')
+def post_wordcloud(request: Request, search_string: str = Form(...), product: str = Form(...)):
+    """
+    This api gets wordcloud creation request from get api and performs action to create,
+    test.html.
+    :return: Renders test.html which includes plotly wordcloud
+    """
+    try:
+        reviews = database.get_collection(search_string)
+        result_fig = plotly_wordcloud(reviews[0][product.replace("%20", ' ')[:-1]])
+        result_fig.write_html('templates/test.html')
+        return templates.TemplateResponse(name="test.html", context={"request": request})
+    except Exception as e:
+        message = FlipkartCustomException(e, sys)
+        logger.error(message.error_message)
+        return templates.TemplateResponse(name="505.html", context={"request": request})
+
+@app.get('/get_download_csv')
+def get_download_csv(request: Request,search_string: str):
+    """
+    This api asks user to select data to download in csv format
+    :return: Renders download_data.html
+    """
+    try:
+        reviews = database.get_collection(search_string)
+        return templates.TemplateResponse(name="download_data.html",
+                                          context={"request": request,
+                                                   'list_of_products': list(reviews[0].keys())[1:],
+                                                   'search_string': search_string})
+    except Exception as e:
+        message = FlipkartCustomException(e, sys)
+        logger.error(message.error_message)
+        return templates.TemplateResponse(name="505.html", context={"request": request})
+
+
+@app.post('/post_download_csv')
+def post_download_csv(request: Request, search_string: str = Form(...), product: str = Form(...)):
+    """
+    This Api downloads selected data into users local system.
+    :return: Download data in csv format
+    """
+    try:
+        reviews = database.get_collection(search_string)
+        data = reviews[0][product.replace("%20", ' ')[:-1]]
+        df = pd.DataFrame(data)
+        df.to_csv("static/csv/data.csv", index=False)
+        return FileResponse(path="static/csv/data.csv", filename="data.csv")
+    except Exception as e:
+        message = FlipkartCustomException(e, sys)
+        logger.error(message.error_message)
+        return templates.TemplateResponse(name="505.html", context={"request": request})
+
 
 if __name__ == "__main__":
-    app.run(host='127.0.0.1', port=8001, debug=True)
-	#app.run(debug=True)
+    uvicorn.run(app, host="0.0.0.0", port=8080)

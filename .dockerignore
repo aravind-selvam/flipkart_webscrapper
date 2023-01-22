@@ -1,0 +1,7 @@
+venv
+logs
+.gitignore
+initial_setup.sh
+LICENSE
+README.md
+.ipynb_checkpoints
