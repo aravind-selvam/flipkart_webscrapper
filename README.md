@@ -102,4 +102,4 @@ Aravind S
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE.md]() file for details
+This project is licensed under the MIT License - see the [LICENSE.md](https://github.com/aravind-selvam/Flipkart_webscrapper/blob/main/LICENSE) file for details
